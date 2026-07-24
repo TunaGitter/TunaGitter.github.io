@@ -3,6 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#05140d">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <title>Dragon Radar</title>
 <style>
   :root{
@@ -447,6 +451,15 @@
   resizeCanvas();
   requestAnimationFrame(draw);
 })();
+
+// Register service worker: after the first successful load (with signal),
+// the whole app is cached and works with zero network from then on.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./service-worker.js')
+      .catch(err => console.warn('Service worker registration failed:', err));
+  });
+}
 </script>
 </body>
 </html>
