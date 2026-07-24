@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Dragon Radar</title>
+<style>
+  :root{
+    --bg:#05140d;
+    --bg-panel:#0a1e15;
+    --grid:#123d29;
+    --phosphor:#3dff9a;
+    --phosphor-dim:#1f8c58;
+    --amber:#ffb648;
+    --text:#d8ffe9;
+    --text-dim:#5f9a7c;
+    --danger:#ff5f56;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", "Consolas", monospace;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg); color:var(--text);
+    font-family:var(--mono);
+    overflow:hidden;
+  }
+  body{
+    display:flex; flex-direction:column;
+    min-height:100vh; min-height:100dvh;
+  }
+
+  /* ---- status bar ---- */
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 14px; border-bottom:1px solid var(--grid);
+    background:var(--bg-panel);
+    letter-spacing:.08em; font-size:11px; text-transform:uppercase;
+    color:var(--text-dim);
+  }
+  header .title{ color:var(--phosphor); font-size:13px; font-weight:600; letter-spacing:.15em; }
+  .status-dot{ display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:6px; background:var(--danger); box-shadow:0 0 6px var(--danger); }
+  .status-dot.on{ background:var(--phosphor); box-shadow:0 0 6px var(--phosphor); }
+  #insecure-warning{
+    display:none; background:var(--amber); color:#1a1200; font-size:11px;
+    padding:6px 14px; text-align:center; letter-spacing:.05em;
+  }
+
+  /* ---- radar scope ---- */
+  .scope-wrap{
+    position:relative; flex:1; display:flex; align-items:center; justify-content:center;
+    padding:16px; min-height:0;
+  }
+  #scope{ width:100%; height:100%; max-width:min(92vw,520px); max-height:min(92vw,520px); aspect-ratio:1/1; display:block; }
+
+  /* ---- HUD readout row under scope ---- */
+  .readout{
+    display:flex; justify-content:space-around; padding:6px 10px 2px;
+    font-size:10px; color:var(--text-dim); letter-spacing:.05em; text-transform:uppercase;
+  }
+  .readout b{ color:var(--phosphor); font-weight:600; }
+
+  /* ---- controls ---- */
+  .controls{
+    display:flex; gap:10px; padding:12px 14px calc(14px + env(safe-area-inset-bottom));
+    background:var(--bg-panel); border-top:1px solid var(--grid);
+  }
+  button{
+    font-family:var(--mono); font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+    border-radius:3px; padding:13px 10px; cursor:pointer;
+    border:1px solid var(--phosphor-dim); background:transparent; color:var(--phosphor);
+    transition:transform .08s ease, background .15s ease;
+    flex:1;
+  }
+  button:active{ transform:scale(.96); background:rgba(61,255,154,.12); }
+  button.primary{ background:var(--phosphor); color:#04180f; border-color:var(--phosphor); font-weight:700; }
+  button.primary:active{ background:var(--phosphor-dim); }
+  button:disabled{ opacity:.35; pointer-events:none; }
+  .calib{ display:flex; gap:6px; }
+  .calib button{ flex:0 0 auto; padding:13px 14px; }
+
+  /* ---- target list ---- */
+  #list{ max-height:26vh; overflow-y:auto; border-top:1px solid var(--grid); background:var(--bg-panel); }
+  .row{
+    display:flex; align-items:center; gap:10px; padding:8px 14px;
+    border-bottom:1px solid rgba(18,61,41,.6); font-size:12px;
+  }
+  .row .dot{ width:8px; height:8px; border-radius:50%; background:var(--phosphor); box-shadow:0 0 5px var(--phosphor); flex:0 0 auto; }
+  .row.stale .dot{ background:var(--text-dim); box-shadow:none; }
+  .row .id{ color:var(--phosphor); font-weight:700; width:34px; }
+  .row .dist{ flex:1; }
+  .row .batt{ color:var(--text-dim); width:52px; text-align:right; }
+  #empty-list{ padding:14px; text-align:center; color:var(--text-dim); font-size:11px; letter-spacing:.05em; }
+</style>
+</head>
+<body>
+
+  <div id="insecure-warning">Load this page over HTTPS or from localhost — Bluetooth/GPS require a secure context.</div>
+
+  <header>
+    <span class="title">◈ Dragon Radar</span>
+    <span><span id="ble-dot" class="status-dot"></span><span id="ble-status">Bridge disconnected</span></span>
+  </header>
+
+  <div class="scope-wrap">
+    <canvas id="scope"></canvas>
+  </div>
+
+  <div class="readout">
+    <span>Fix: <b id="gps-readout">--</b></span>
+    <span>Hdg: <b id="hdg-readout">--°</b></span>
+    <span>Contacts: <b id="count-readout">0</b></span>
+  </div>
+
+  <div id="list"><div id="empty-list">No contacts yet</div></div>
+
+  <div class="controls">
+    <button id="connect-btn" class="primary">Connect Bridge</button>
+    <button id="ping-btn" disabled>Ping</button>
+    <div class="calib">
+      <button id="calib-minus" title="Nudge heading -5°">-5°</button>
+      <button id="calib-plus" title="Nudge heading +5°">+5°</button>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ---- must match bridge_node.ino exactly ----
+  const SERVICE_UUID     = '7a2e0001-4b8a-4f0f-9a3d-2e6f8c1a9b10';
+  const CHAR_DATA_UUID    = '7a2e0002-4b8a-4f0f-9a3d-2e6f8c1a9b10';
+  const CHAR_CONTROL_UUID = '7a2e0003-4b8a-4f0f-9a3d-2e6f8c1a9b10';
+
+  const STALE_MS = 45000; // dim a contact after this long without an update
+
+  // ---- secure context check ----
+  const secure = window.isSecureContext;
+  if (!secure) document.getElementById('insecure-warning').style.display = 'block';
+
+  // ---- state ----
+  let device = null, dataChar = null, controlChar = null;
+  let myLat = null, myLon = null;
+  let heading = 0;            // degrees, 0 = facing device forward = north
+  let headingOffset = 0;      // manual calibration nudge
+  const targets = {}; // id -> {lat, lon, batt, type, lastSeen, flash}
+
+  const bleDot = document.getElementById('ble-dot');
+  const bleStatus = document.getElementById('ble-status');
+  const connectBtn = document.getElementById('connect-btn');
+  const pingBtn = document.getElementById('ping-btn');
+  const gpsReadout = document.getElementById('gps-readout');
+  const hdgReadout = document.getElementById('hdg-readout');
+  const countReadout = document.getElementById('count-readout');
+  const listEl = document.getElementById('list');
+
+  // ---- geo math (mirrors firmware) ----
+  const toRad = d => d * Math.PI / 180;
+  const toDeg = r => r * 180 / Math.PI;
+
+  function haversineMeters(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a = Math.sin(dLat/2)**2 +
+              Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
+  function bearingDeg(lat1, lon1, lat2, lon2) {
+    const phi1 = toRad(lat1), phi2 = toRad(lat2), dLon = toRad(lon2 - lon1);
+    const y = Math.sin(dLon) * Math.cos(phi2);
+    const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLon);
+    return (toDeg(Math.atan2(y, x)) + 360) % 360;
+  }
+
+  // ---- geolocation ----
+  if ('geolocation' in navigator) {
+    navigator.geolocation.watchPosition(
+      pos => {
+        myLat = pos.coords.latitude;
+        myLon = pos.coords.longitude;
+        gpsReadout.textContent = `${myLat.toFixed(5)}, ${myLon.toFixed(5)}`;
+      },
+      err => { gpsReadout.textContent = 'error'; console.warn('geo error', err); },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
+    );
+  }
+
+  // ---- orientation / compass heading ----
+  // Android Chrome exposes absolute heading via 'deviceorientationabsolute'.
+  // If the arrow points the wrong way for your phone, use the -5/+5 buttons
+  // below the scope to nudge headingOffset until it tracks correctly.
+  function onOrientation(e) {
+    let h = null;
+    if (typeof e.webkitCompassHeading === 'number') {
+      h = e.webkitCompassHeading; // iOS Safari, not the primary target but harmless to support
+    } else if (e.alpha != null) {
+      h = (360 - e.alpha) % 360;
+    }
+    if (h != null) {
+      heading = (h + headingOffset + 360) % 360;
+      hdgReadout.textContent = heading.toFixed(0) + '°';
+    }
+  }
+  function startOrientation() {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then(state => {
+        if (state === 'granted') attachOrientation();
+      }).catch(() => attachOrientation());
+    } else {
+      attachOrientation();
+    }
+  }
+  function attachOrientation() {
+    window.addEventListener('deviceorientationabsolute', onOrientation, true);
+    window.addEventListener('deviceorientation', onOrientation, true);
+  }
+  startOrientation();
+
+  document.getElementById('calib-minus').onclick = () => { headingOffset = (headingOffset - 5 + 360) % 360; };
+  document.getElementById('calib-plus').onclick  = () => { headingOffset = (headingOffset + 5) % 360; };
+
+  // ---- BLE ----
+  async function connectBridge() {
+    if (!navigator.bluetooth) {
+      alert('Web Bluetooth is not available in this browser. Use Chrome on Android.');
+      return;
+    }
+    try {
+      connectBtn.textContent = 'Connecting…';
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [SERVICE_UUID] }]
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      dataChar = await service.getCharacteristic(CHAR_DATA_UUID);
+      controlChar = await service.getCharacteristic(CHAR_CONTROL_UUID);
+
+      await dataChar.startNotifications();
+      dataChar.addEventListener('characteristicvaluechanged', handleData);
+
+      setConnected(true);
+    } catch (err) {
+      console.error(err);
+      connectBtn.textContent = 'Connect Bridge';
+      bleStatus.textContent = 'Connection failed';
+    }
+  }
+
+  function onDisconnected() {
+    setConnected(false);
+  }
+
+  function setConnected(on) {
+    bleDot.classList.toggle('on', on);
+    bleStatus.textContent = on ? 'Bridge connected' : 'Bridge disconnected';
+    connectBtn.textContent = on ? 'Disconnect' : 'Connect Bridge';
+    pingBtn.disabled = !on;
+  }
+
+  connectBtn.onclick = () => {
+    if (device && device.gatt.connected) {
+      device.gatt.disconnect();
+    } else {
+      connectBridge();
+    }
+  };
+
+  pingBtn.onclick = async () => {
+    if (!controlChar) return;
+    try {
+      await controlChar.writeValue(new TextEncoder().encode('PING'));
+    } catch (err) { console.error('ping write failed', err); }
+  };
+
+  function handleData(event) {
+    const text = new TextDecoder().decode(event.target.value);
+    let pkt;
+    try { pkt = JSON.parse(text); } catch { console.warn('bad packet', text); return; }
+    if (pkt.id == null) return;
+    targets[pkt.id] = {
+      lat: pkt.lat, lon: pkt.lon, batt: pkt.batt, type: pkt.type,
+      lastSeen: Date.now(), flash: Date.now()
+    };
+  }
+
+  // ---- radar scope rendering ----
+  const canvas = document.getElementById('scope');
+  const ctx = canvas.getContext('2d');
+  let sweepAngle = 0;
+
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resizeCanvas);
+
+  function currentMaxRange(distances) {
+    const farthest = distances.length ? Math.max(...distances) : 0;
+    // round up to a friendly ring scale
+    const steps = [50, 100, 200, 500, 1000, 2000, 5000];
+    for (const s of steps) if (farthest <= s * 0.9) return s;
+    return Math.ceil(farthest / 500) * 500 || 500;
+  }
+
+  function draw() {
+    const rect = canvas.getBoundingClientRect();
+    const w = rect.width, h = rect.height;
+    const cx = w / 2, cy = h / 2;
+    const R = Math.min(w, h) / 2 - 24;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // -- range rings --
+    ctx.strokeStyle = 'rgba(61,255,154,0.18)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 3; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * i / 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // crosshair
+    ctx.beginPath();
+    ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+    ctx.stroke();
+
+    // -- compute live target positions --
+    const now = Date.now();
+    const entries = Object.entries(targets);
+    let distances = [];
+    let plotted = [];
+
+    if (myLat != null && myLon != null) {
+      for (const [id, t] of entries) {
+        const dist = haversineMeters(myLat, myLon, t.lat, t.lon);
+        const brg  = bearingDeg(myLat, myLon, t.lat, t.lon);
+        const rel  = (brg - heading + 360) % 360;
+        distances.push(dist);
+        plotted.push({ id, dist, rel, t });
+      }
+    }
+    const maxRange = currentMaxRange(distances);
+
+    // ring distance labels
+    ctx.fillStyle = 'rgba(216,255,233,0.45)';
+    ctx.font = '10px ' + getComputedStyle(document.documentElement).getPropertyValue('--mono');
+    for (let i = 1; i <= 3; i++) {
+      const label = Math.round(maxRange * i / 3);
+      ctx.fillText(label >= 1000 ? (label/1000).toFixed(1)+'km' : label+'m', cx + 4, cy - R * i / 3 + 12);
+    }
+
+    // -- rotating sweep (decorative) --
+    sweepAngle = (sweepAngle + 1.6) % 360;
+    const sweepRad = toRad(sweepAngle - 90);
+    const grad = ctx.createConicGradient
+      ? ctx.createConicGradient(sweepRad, cx, cy)
+      : null;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, R, sweepRad - 0.5, sweepRad);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(61,255,154,0.14)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(sweepRad), cy + R * Math.sin(sweepRad));
+    ctx.strokeStyle = 'rgba(61,255,154,0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+
+    // -- "you" marker at center, pointing forward --
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.beginPath();
+    ctx.moveTo(0, -9);
+    ctx.lineTo(6, 7);
+    ctx.lineTo(-6, 7);
+    ctx.closePath();
+    ctx.fillStyle = '#d8ffe9';
+    ctx.fill();
+    ctx.restore();
+
+    // -- target blips --
+    for (const p of plotted) {
+      const age = now - p.t.lastSeen;
+      const stale = age > STALE_MS;
+      const r = Math.min(p.dist / maxRange, 1) * R;
+      const ang = toRad(p.rel - 90);
+      const x = cx + r * Math.cos(ang);
+      const y = cy + r * Math.sin(ang);
+
+      // fresh-packet pulse ring
+      const sinceFlash = now - p.t.flash;
+      if (sinceFlash < 900) {
+        const pulseR = 4 + (sinceFlash / 900) * 16;
+        ctx.beginPath();
+        ctx.arc(x, y, pulseR, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(61,255,154,${1 - sinceFlash / 900})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = stale ? 'rgba(95,154,124,0.8)' : '#3dff9a';
+      ctx.shadowColor = stale ? 'transparent' : '#3dff9a';
+      ctx.shadowBlur = stale ? 0 : 8;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = stale ? 'rgba(216,255,233,0.5)' : '#d8ffe9';
+      ctx.font = '11px ' + getComputedStyle(document.documentElement).getPropertyValue('--mono');
+      ctx.fillText(`#${p.id}`, x + 8, y - 6);
+    }
+
+    countReadout.textContent = plotted.length;
+    updateList(plotted, now);
+
+    requestAnimationFrame(draw);
+  }
+
+  function updateList(plotted, now) {
+    if (plotted.length === 0) {
+      listEl.innerHTML = '<div id="empty-list">No contacts yet</div>';
+      return;
+    }
+    const sorted = [...plotted].sort((a, b) => a.dist - b.dist);
+    listEl.innerHTML = sorted.map(p => {
+      const stale = (now - p.t.lastSeen) > STALE_MS;
+      const distStr = p.dist >= 1000 ? (p.dist/1000).toFixed(2)+' km' : Math.round(p.dist)+' m';
+      const ageS = Math.round((now - p.t.lastSeen) / 1000);
+      return `<div class="row ${stale ? 'stale' : ''}">
+        <span class="dot"></span>
+        <span class="id">#${p.id}</span>
+        <span class="dist">${distStr} · ${ageS}s ago</span>
+        <span class="batt">${p.t.batt != null ? p.t.batt + '%' : '--'}</span>
+      </div>`;
+    }).join('');
+  }
+
+  resizeCanvas();
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>
