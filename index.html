@@ -90,6 +90,9 @@
   }
   .row .dot{ width:8px; height:8px; border-radius:50%; background:var(--phosphor); box-shadow:0 0 5px var(--phosphor); flex:0 0 auto; }
   .row.stale .dot{ background:var(--text-dim); box-shadow:none; }
+  .row.hunter .dot{ background:var(--amber); box-shadow:0 0 5px var(--amber); border-radius:2px; }
+  .row.hunter.stale .dot{ background:rgba(255,182,72,0.5); box-shadow:none; }
+  .row.hunter .id{ color:var(--amber); }
   .row .id{ color:var(--phosphor); font-weight:700; width:34px; }
   .row .dist{ flex:1; }
   .row .batt{ color:var(--text-dim); width:52px; text-align:right; }
@@ -134,6 +137,13 @@
   const CHAR_CONTROL_UUID = '7a2e0003-4b8a-4f0f-9a3d-2e6f8c1a9b10';
 
   const STALE_MS = 45000; // dim a contact after this long without an update
+  const POS_PUSH_INTERVAL_MS = 5000; // how often to push this phone's GPS down to the bridge
+
+  // Node IDs that are OTHER hunters/bridges, not dragon-ball targets —
+  // edit this to match whichever physical IDs you've assigned as bridges
+  // (e.g. {1, 2} for two hunters). Purely cosmetic: just controls how
+  // those contacts are drawn/labeled differently on this screen.
+  const HUNTER_IDS = new Set([1, 2]);
 
   // ---- secure context check ----
   const secure = window.isSecureContext;
@@ -142,6 +152,7 @@
   // ---- state ----
   let device = null, dataChar = null, controlChar = null;
   let myLat = null, myLon = null;
+  let lastPosPushAt = 0;
   let heading = 0;            // degrees, 0 = facing device forward = north
   let headingOffset = 0;      // manual calibration nudge
   const targets = {}; // id -> {lat, lon, batt, type, lastSeen, flash}
@@ -181,11 +192,31 @@
         myLat = pos.coords.latitude;
         myLon = pos.coords.longitude;
         gpsReadout.textContent = `${myLat.toFixed(5)}, ${myLon.toFixed(5)}`;
+        maybePushPosition();
       },
       err => { gpsReadout.textContent = 'error'; console.warn('geo error', err); },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 8000 }
     );
   }
+
+  // Sends this phone's GPS fix down to the bridge so it can self-beacon
+  // as a hunter contact on LoRa. Throttled so we're not hammering BLE
+  // writes on every single geolocation update.
+  async function maybePushPosition() {
+    if (!controlChar || myLat == null || myLon == null) return;
+    const now = Date.now();
+    if (now - lastPosPushAt < POS_PUSH_INTERVAL_MS) return;
+    lastPosPushAt = now;
+    const msg = `POS:${myLat.toFixed(6)},${myLon.toFixed(6)}`;
+    try {
+      await controlChar.writeValue(new TextEncoder().encode(msg));
+    } catch (err) { console.warn('position push failed', err); }
+  }
+
+  // Fallback timer: watchPosition may go quiet while stationary, but we
+  // still want this hunter to keep beaconing (even an unchanged fix) the
+  // same way a target keeps beaconing regardless of motion.
+  setInterval(maybePushPosition, POS_PUSH_INTERVAL_MS);
 
   // ---- orientation / compass heading ----
   // Android Chrome exposes absolute heading via 'deviceorientationabsolute'.
@@ -244,6 +275,8 @@
       dataChar.addEventListener('characteristicvaluechanged', handleData);
 
       setConnected(true);
+      lastPosPushAt = 0; // force an immediate push on connect rather than waiting out the throttle
+      maybePushPosition();
     } catch (err) {
       console.error(err);
       connectBtn.textContent = 'Connect Bridge';
@@ -257,7 +290,9 @@
 
   function setConnected(on) {
     bleDot.classList.toggle('on', on);
-    bleStatus.textContent = on ? 'Bridge connected' : 'Bridge disconnected';
+    bleStatus.textContent = on
+      ? `Connected: ${device && device.name ? device.name : 'Bridge'}`
+      : 'Bridge disconnected';
     connectBtn.textContent = on ? 'Disconnect' : 'Connect Bridge';
     pingBtn.disabled = !on;
   }
@@ -390,14 +425,17 @@
     ctx.fill();
     ctx.restore();
 
-    // -- target blips --
+    // -- contact blips --
     for (const p of plotted) {
       const age = now - p.t.lastSeen;
       const stale = age > STALE_MS;
+      const isHunter = HUNTER_IDS.has(Number(p.id));
       const r = Math.min(p.dist / maxRange, 1) * R;
       const ang = toRad(p.rel - 90);
       const x = cx + r * Math.cos(ang);
       const y = cy + r * Math.sin(ang);
+      const liveColor = isHunter ? '#ffb648' : '#3dff9a';
+      const staleColor = isHunter ? 'rgba(255,182,72,0.65)' : 'rgba(95,154,124,0.8)';
 
       // fresh-packet pulse ring
       const sinceFlash = now - p.t.flash;
@@ -405,22 +443,32 @@
         const pulseR = 4 + (sinceFlash / 900) * 16;
         ctx.beginPath();
         ctx.arc(x, y, pulseR, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(61,255,154,${1 - sinceFlash / 900})`;
+        ctx.strokeStyle = isHunter
+          ? `rgba(255,182,72,${1 - sinceFlash / 900})`
+          : `rgba(61,255,154,${1 - sinceFlash / 900})`;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
 
       ctx.beginPath();
-      ctx.arc(x, y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = stale ? 'rgba(95,154,124,0.8)' : '#3dff9a';
-      ctx.shadowColor = stale ? 'transparent' : '#3dff9a';
+      if (isHunter) {
+        // diamond marker for a fellow hunter/bridge
+        const s = 6;
+        ctx.moveTo(x, y - s); ctx.lineTo(x + s, y); ctx.lineTo(x, y + s); ctx.lineTo(x - s, y);
+        ctx.closePath();
+      } else {
+        // dot marker for a dragon-ball target
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+      }
+      ctx.fillStyle = stale ? staleColor : liveColor;
+      ctx.shadowColor = stale ? 'transparent' : liveColor;
       ctx.shadowBlur = stale ? 0 : 8;
       ctx.fill();
       ctx.shadowBlur = 0;
 
       ctx.fillStyle = stale ? 'rgba(216,255,233,0.5)' : '#d8ffe9';
       ctx.font = '11px ' + getComputedStyle(document.documentElement).getPropertyValue('--mono');
-      ctx.fillText(`#${p.id}`, x + 8, y - 6);
+      ctx.fillText(isHunter ? `H${p.id}` : `#${p.id}`, x + 8, y - 6);
     }
 
     countReadout.textContent = plotted.length;
@@ -437,11 +485,12 @@
     const sorted = [...plotted].sort((a, b) => a.dist - b.dist);
     listEl.innerHTML = sorted.map(p => {
       const stale = (now - p.t.lastSeen) > STALE_MS;
+      const isHunter = HUNTER_IDS.has(Number(p.id));
       const distStr = p.dist >= 1000 ? (p.dist/1000).toFixed(2)+' km' : Math.round(p.dist)+' m';
       const ageS = Math.round((now - p.t.lastSeen) / 1000);
-      return `<div class="row ${stale ? 'stale' : ''}">
+      return `<div class="row ${stale ? 'stale' : ''} ${isHunter ? 'hunter' : ''}">
         <span class="dot"></span>
-        <span class="id">#${p.id}</span>
+        <span class="id">${isHunter ? 'H' : '#'}${p.id}</span>
         <span class="dist">${distStr} · ${ageS}s ago</span>
         <span class="batt">${p.t.batt != null ? p.t.batt + '%' : '--'}</span>
       </div>`;

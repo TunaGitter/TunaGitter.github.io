@@ -4,7 +4,7 @@
 // GET response is opportunistically cached too, so this stays current
 // whenever you do have signal, without you needing to do anything.
 
-const CACHE_NAME = 'dragon-radar-v1'; // bump this (v2, v3...) whenever you deploy a real update
+const CACHE_NAME = 'dragon-radar-v2'; // bumped: multi-hunter support (position push, hunter/target distinction)
 const CORE_ASSETS = [
   './',
   './index.html',

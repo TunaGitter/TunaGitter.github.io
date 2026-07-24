@@ -139,6 +139,46 @@ before re-uploading — this forces the old cached version to be replaced
 next time you have signal, rather than the app silently sticking with
 stale code forever.
 
+## Running two phone/bridge hunters at once
+
+`bridge_node.ino` now does double duty: it still relays what it hears
+over LoRa to its own phone, but it also takes that phone's GPS fix (a new
+`POS:lat,lon` write from the web page) and broadcasts it out over LoRa on
+its own node ID, on the same schedule/format as a target. That's what
+lets two hunters see each other — to the radio, a bridge's self-beacon is
+indistinguishable from a dragon-ball target's beacon.
+
+**Board budget:** you have 8 kits total. Two as bridges + all 7 originally
+target-flashed boards would need 9 — one board over. Simplest fix: pick
+one of your existing target boards (say, the one currently running ID 2)
+and reflash it with `bridge_node.ino` instead. That leaves 2 bridges (IDs
+1 and 2) + 6 targets (IDs 3-8), no changes needed on the untouched target
+boards.
+
+**Setup:**
+1. Flash `bridge_node.ino` to both bridge boards, giving each a unique
+   `MY_NODE_ID` (1 and 2). Don't reuse an ID that's still running on a
+   target board.
+2. Re-upload the updated `index.html` and `service-worker.js` to the same
+   GitHub Pages repo (overwrite the existing files) — this version adds
+   the position push and visually distinguishes hunter contacts (amber
+   diamond marker, "H" prefix) from target contacts (green dot, "#" prefix).
+3. In `index.html`, the `HUNTER_IDS` constant near the top of the
+   `<script>` block is set to `{1, 2}` by default, matching the two bridge
+   IDs above — update it if you pick different IDs. It's purely cosmetic
+   (which color/shape a contact draws as), so both phones can share the
+   exact same deployed page with no per-phone customization needed.
+4. On each phone, open the page (may need one fresh load with signal
+   after updating, so both the new service worker and new HTML take over
+   from the cached version) and tap **Connect Bridge** — you'll now see
+   two distinct entries in the pairing picker, `DragonRadar-Bridge-1` and
+   `DragonRadar-Bridge-2`, so it's clear which phone is pairing with which
+   board.
+5. Each hunter passively self-beacons its position every ~15s (same
+   cadence/jitter as targets) and answers pings from either bridge using
+   the same staggered-slot scheme targets use — so a ping from either
+   phone sweeps everyone: targets and the other hunter alike.
+
 ## US915 legal notes (California)
 Config defaults to 915 MHz, 20 dBm conducted, SF9/BW125 — well within FCC
 Part 15.247 hobby limits. No mandatory duty-cycle restriction like EU, but
