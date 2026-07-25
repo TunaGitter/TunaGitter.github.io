@@ -4,7 +4,7 @@
 // GET response is opportunistically cached too, so this stays current
 // whenever you do have signal, without you needing to do anything.
 
-const CACHE_NAME = 'dragon-radar-v3'; // bumped: heading smoothing, no-fix filtering, range hysteresis
+const CACHE_NAME = 'dragon-radar-v4'; // bumped: outlier-robust heading filter, north-up toggle, contact expiry, sweep removed
 const CORE_ASSETS = [
   './',
   './index.html',

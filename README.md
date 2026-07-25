@@ -207,6 +207,31 @@ both now fixed in `index.html`:
 Re-upload the updated `index.html` and `service-worker.js` to pick this
 up (same repo, same filenames, overwrite the existing ones).
 
+## Further stability + display tweaks
+
+- **Heading filter overhauled.** The original single-sample low-pass
+  filter wasn't enough against real phone magnetometer noise. Heading is
+  now a rolling average over the last 8 accepted samples, and any single
+  reading that jumps more than 60° from that average is rejected outright
+  rather than blended in — unless 3 consecutive readings agree on the new
+  direction, which is treated as a genuine fast turn rather than noise.
+  Also fixed a real bug: the page was listening to both
+  `deviceorientationabsolute` and plain `deviceorientation` and feeding
+  both into the same filter, which can disagree and fight each other on
+  phones that fire both. Only one source is used now, preferring absolute.
+- **North Up toggle** added to the controls row. Off (default) is
+  heading-up — the scope rotates with you, matching before. On locks the
+  map to true north; contacts stay fixed as you turn, and the "you"
+  marker rotates instead to show which way you're facing.
+- **Contacts now expire.** `STALE_MS` (45s) still just dims a quiet
+  contact; a new `EXPIRE_MS` (3 minutes, edit the constant to taste)
+  fully removes it from the list/scope if nothing's been heard from it
+  in that long.
+- **Removed the decorative rotating sweep line** — it didn't correspond
+  to any real event, so it's gone. The pulse-ring animation on each
+  contact is unrelated and stays, since that one *is* data-driven — it
+  fires exactly when a fresh packet actually arrives for that contact.
+
 ## US915 legal notes (California)
 Config defaults to 915 MHz, 20 dBm conducted, SF9/BW125 — well within FCC
 Part 15.247 hobby limits. No mandatory duty-cycle restriction like EU, but

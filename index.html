@@ -79,6 +79,7 @@
   button.primary{ background:var(--phosphor); color:#04180f; border-color:var(--phosphor); font-weight:700; }
   button.primary:active{ background:var(--phosphor-dim); }
   button:disabled{ opacity:.35; pointer-events:none; }
+  button.active{ background:var(--amber); color:#1a1200; border-color:var(--amber); font-weight:700; }
   .calib{ display:flex; gap:6px; }
   .calib button{ flex:0 0 auto; padding:13px 14px; }
 
@@ -125,6 +126,7 @@
   <div class="controls">
     <button id="connect-btn" class="primary">Connect Bridge</button>
     <button id="ping-btn" disabled>Ping</button>
+    <button id="northup-btn" title="Toggle between heading-up and north-up">North Up: Off</button>
     <div class="calib">
       <button id="calib-minus" title="Nudge heading -5°">-5°</button>
       <button id="calib-plus" title="Nudge heading +5°">+5°</button>
@@ -138,7 +140,8 @@
   const CHAR_DATA_UUID    = '7a2e0002-4b8a-4f0f-9a3d-2e6f8c1a9b10';
   const CHAR_CONTROL_UUID = '7a2e0003-4b8a-4f0f-9a3d-2e6f8c1a9b10';
 
-  const STALE_MS = 45000; // dim a contact after this long without an update
+  const STALE_MS = 45000;   // dim a contact after this long without an update
+  const EXPIRE_MS = 180000; // fully drop a contact from the list/scope after this long with no update at all
   const POS_PUSH_INTERVAL_MS = 5000; // how often to push this phone's GPS down to the bridge
 
   // Node IDs that are OTHER hunters/bridges, not dragon-ball targets —
@@ -157,6 +160,7 @@
   let lastPosPushAt = 0;
   let heading = 0;            // degrees, 0 = facing device forward = north
   let headingOffset = 0;      // manual calibration nudge
+  let northUp = false;        // false = heading-up (scope rotates with you), true = north-up (fixed map, "you" marker rotates instead)
   const targets = {}; // id -> {lat, lon, batt, type, lastSeen, flash}
 
   const bleDot = document.getElementById('ble-dot');
@@ -225,14 +229,75 @@
   // If the arrow points the wrong way for your phone, use the -5/+5 buttons
   // below the scope to nudge headingOffset until it tracks correctly.
   //
-  // Raw magnetometer readings are noisy frame-to-frame, and since every
-  // contact's on-screen position depends on (bearing - heading), that
-  // noise makes everything wobble in sync. We low-pass filter it — but
-  // averaging raw degrees breaks near the 0/360 wrap (359 and 1 should
-  // average to 0, not 180), so we filter the heading as a unit vector
-  // instead and convert back with atan2, which handles wraparound cleanly.
-  let headingVecX = 1, headingVecY = 0;
-  const HEADING_SMOOTHING = 0.15; // 0-1: lower = smoother but laggier, higher = snappier but noisier
+  // Raw phone magnetometer readings are noisy — real single-sample spikes,
+  // not just gentle wobble — and since every contact's on-screen position
+  // depends on (bearing - heading), that noise moves everything at once.
+  // Two things here address that:
+  //   1. Only one event source is used at a time. Some devices fire BOTH
+  //      'deviceorientationabsolute' and plain 'deviceorientation' for the
+  //      same motion, and the latter isn't necessarily compass-referenced
+  //      (it can drift/use a different reference frame). Processing both
+  //      into one filter made the noise worse, not better. Once absolute
+  //      events are confirmed available, plain ones are ignored entirely.
+  //   2. Heading is a rolling average over the last HEADING_WINDOW samples
+  //      (as unit vectors, so it handles the 0/360 wrap cleanly) rather
+  //      than a single-sample exponential filter, AND a single sample that
+  //      jumps more than OUTLIER_THRESHOLD_DEG from the current average is
+  //      rejected outright rather than blended in — UNLESS several
+  //      consecutive samples agree on the new direction, which is treated
+  //      as a genuine fast turn rather than noise and snaps to it quickly.
+  const HEADING_WINDOW = 8;
+  const OUTLIER_THRESHOLD_DEG = 60;
+  const CONFIRM_SAMPLES = 3;
+
+  let headingBuffer = [];  // accepted samples: {x, y} unit vectors, oldest first
+  let pendingBuffer = [];  // consecutive rejected samples awaiting confirmation as a real turn
+
+  function angDiff(a, b) {
+    const d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+  function vectorAverageDeg(buf) {
+    let sx = 0, sy = 0;
+    for (const v of buf) { sx += v.x; sy += v.y; }
+    return (toDeg(Math.atan2(sy, sx)) + 360) % 360;
+  }
+
+  function pushRawHeading(rawDeg) {
+    const rad = toRad(rawDeg);
+    const sample = { x: Math.cos(rad), y: Math.sin(rad) };
+
+    if (headingBuffer.length === 0) {
+      headingBuffer.push(sample);
+      heading = rawDeg;
+      return;
+    }
+
+    const currentAvg = vectorAverageDeg(headingBuffer);
+    if (angDiff(rawDeg, currentAvg) <= OUTLIER_THRESHOLD_DEG) {
+      headingBuffer.push(sample);
+      if (headingBuffer.length > HEADING_WINDOW) headingBuffer.shift();
+      pendingBuffer = []; // a normal sample breaks any outlier streak
+    } else {
+      const pendingAvg = pendingBuffer.length ? vectorAverageDeg(pendingBuffer) : null;
+      if (pendingAvg != null && angDiff(rawDeg, pendingAvg) <= 20) {
+        pendingBuffer.push(sample);
+      } else {
+        pendingBuffer = [sample];
+      }
+      if (pendingBuffer.length >= CONFIRM_SAMPLES) {
+        // several samples in a row agree on a big jump — treat it as a
+        // real fast turn, not noise, and snap the window to it
+        headingBuffer = [...pendingBuffer];
+        pendingBuffer = [];
+      }
+      // otherwise: an isolated spike — don't let it into the average at all
+    }
+
+    heading = vectorAverageDeg(headingBuffer);
+  }
+
+  let usingAbsoluteOrientation = false;
   function onOrientation(e) {
     let h = null;
     if (typeof e.webkitCompassHeading === 'number') {
@@ -241,15 +306,11 @@
       h = (360 - e.alpha) % 360;
     }
     if (h == null) return;
-
-    const rawHeading = (h + headingOffset + 360) % 360;
-    const rad = toRad(rawHeading);
-    headingVecX += (Math.cos(rad) - headingVecX) * HEADING_SMOOTHING;
-    headingVecY += (Math.sin(rad) - headingVecY) * HEADING_SMOOTHING;
-    heading = (toDeg(Math.atan2(headingVecY, headingVecX)) + 360) % 360;
-
+    pushRawHeading((h + headingOffset + 360) % 360);
     hdgReadout.textContent = heading.toFixed(0) + '°';
   }
+  function onAbsoluteOrientation(e) { usingAbsoluteOrientation = true; onOrientation(e); }
+  function onRelativeOrientation(e) { if (!usingAbsoluteOrientation) onOrientation(e); }
   function startOrientation() {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
@@ -261,10 +322,17 @@
     }
   }
   function attachOrientation() {
-    window.addEventListener('deviceorientationabsolute', onOrientation, true);
-    window.addEventListener('deviceorientation', onOrientation, true);
+    window.addEventListener('deviceorientationabsolute', onAbsoluteOrientation, true);
+    window.addEventListener('deviceorientation', onRelativeOrientation, true);
   }
   startOrientation();
+
+  const northUpBtn = document.getElementById('northup-btn');
+  northUpBtn.onclick = () => {
+    northUp = !northUp;
+    northUpBtn.textContent = northUp ? 'North Up: On' : 'North Up: Off';
+    northUpBtn.classList.toggle('active', northUp);
+  };
 
   document.getElementById('calib-minus').onclick = () => { headingOffset = (headingOffset - 5 + 360) % 360; };
   document.getElementById('calib-plus').onclick  = () => { headingOffset = (headingOffset + 5) % 360; };
@@ -342,7 +410,6 @@
   // ---- radar scope rendering ----
   const canvas = document.getElementById('scope');
   const ctx = canvas.getContext('2d');
-  let sweepAngle = 0;
   let rangeTier = 500; // persists across frames so currentMaxRange() can apply hysteresis
 
   function resizeCanvas() {
@@ -394,6 +461,14 @@
 
     // -- compute live target positions --
     const now = Date.now();
+
+    // Fully drop contacts that have gone quiet for EXPIRE_MS — separate
+    // from STALE_MS, which just dims a contact that's momentarily quiet
+    // but probably still around.
+    for (const id of Object.keys(targets)) {
+      if (now - targets[id].lastSeen > EXPIRE_MS) delete targets[id];
+    }
+
     const entries = Object.entries(targets);
     let distances = [];
     let plotted = [];   // has a real GPS fix — drawn on the scope
@@ -407,7 +482,7 @@
         const brg  = bearingDeg(myLat, myLon, t.lat, t.lon);
         const rel  = (brg - heading + 360) % 360;
         distances.push(dist);
-        plotted.push({ id, dist, rel, t });
+        plotted.push({ id, dist, rel, brg, t });
       }
     }
     const maxRange = currentMaxRange(distances);
@@ -420,30 +495,13 @@
       ctx.fillText(label >= 1000 ? (label/1000).toFixed(1)+'km' : label+'m', cx + 4, cy - R * i / 3 + 12);
     }
 
-    // -- rotating sweep (decorative) --
-    sweepAngle = (sweepAngle + 1.6) % 360;
-    const sweepRad = toRad(sweepAngle - 90);
-    const grad = ctx.createConicGradient
-      ? ctx.createConicGradient(sweepRad, cx, cy)
-      : null;
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, R, sweepRad - 0.5, sweepRad);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(61,255,154,0.14)';
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + R * Math.cos(sweepRad), cy + R * Math.sin(sweepRad));
-    ctx.strokeStyle = 'rgba(61,255,154,0.55)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.restore();
-
-    // -- "you" marker at center, pointing forward --
+    // -- "you" marker at center. In heading-up mode (default) it always
+    // points straight up, since the screen itself rotates with you. In
+    // north-up mode the map stays fixed, so this marker rotates instead
+    // to show which way you're actually facing. --
     ctx.save();
     ctx.translate(cx, cy);
+    if (northUp) ctx.rotate(toRad(heading));
     ctx.beginPath();
     ctx.moveTo(0, -9);
     ctx.lineTo(6, 7);
@@ -459,7 +517,8 @@
       const stale = age > STALE_MS;
       const isHunter = HUNTER_IDS.has(Number(p.id));
       const r = Math.min(p.dist / maxRange, 1) * R;
-      const ang = toRad(p.rel - 90);
+      const contactAngle = northUp ? p.brg : p.rel;
+      const ang = toRad(contactAngle - 90);
       const x = cx + r * Math.cos(ang);
       const y = cy + r * Math.sin(ang);
       const liveColor = isHunter ? '#ffb648' : '#3dff9a';
