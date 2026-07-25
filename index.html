@@ -96,6 +96,8 @@
   .row .id{ color:var(--phosphor); font-weight:700; width:34px; }
   .row .dist{ flex:1; }
   .row .batt{ color:var(--text-dim); width:52px; text-align:right; }
+  .row.nofix .dot{ background:transparent; border:1px solid var(--text-dim); box-shadow:none; }
+  .row.nofix .dist{ color:var(--text-dim); font-style:italic; }
   #empty-list{ padding:14px; text-align:center; color:var(--text-dim); font-size:11px; letter-spacing:.05em; }
 </style>
 </head>
@@ -222,6 +224,15 @@
   // Android Chrome exposes absolute heading via 'deviceorientationabsolute'.
   // If the arrow points the wrong way for your phone, use the -5/+5 buttons
   // below the scope to nudge headingOffset until it tracks correctly.
+  //
+  // Raw magnetometer readings are noisy frame-to-frame, and since every
+  // contact's on-screen position depends on (bearing - heading), that
+  // noise makes everything wobble in sync. We low-pass filter it — but
+  // averaging raw degrees breaks near the 0/360 wrap (359 and 1 should
+  // average to 0, not 180), so we filter the heading as a unit vector
+  // instead and convert back with atan2, which handles wraparound cleanly.
+  let headingVecX = 1, headingVecY = 0;
+  const HEADING_SMOOTHING = 0.15; // 0-1: lower = smoother but laggier, higher = snappier but noisier
   function onOrientation(e) {
     let h = null;
     if (typeof e.webkitCompassHeading === 'number') {
@@ -229,10 +240,15 @@
     } else if (e.alpha != null) {
       h = (360 - e.alpha) % 360;
     }
-    if (h != null) {
-      heading = (h + headingOffset + 360) % 360;
-      hdgReadout.textContent = heading.toFixed(0) + '°';
-    }
+    if (h == null) return;
+
+    const rawHeading = (h + headingOffset + 360) % 360;
+    const rad = toRad(rawHeading);
+    headingVecX += (Math.cos(rad) - headingVecX) * HEADING_SMOOTHING;
+    headingVecY += (Math.sin(rad) - headingVecY) * HEADING_SMOOTHING;
+    heading = (toDeg(Math.atan2(headingVecY, headingVecX)) + 360) % 360;
+
+    hdgReadout.textContent = heading.toFixed(0) + '°';
   }
   function startOrientation() {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
@@ -327,6 +343,7 @@
   const canvas = document.getElementById('scope');
   const ctx = canvas.getContext('2d');
   let sweepAngle = 0;
+  let rangeTier = 500; // persists across frames so currentMaxRange() can apply hysteresis
 
   function resizeCanvas() {
     const rect = canvas.getBoundingClientRect();
@@ -339,10 +356,18 @@
 
   function currentMaxRange(distances) {
     const farthest = distances.length ? Math.max(...distances) : 0;
-    // round up to a friendly ring scale
     const steps = [50, 100, 200, 500, 1000, 2000, 5000];
-    for (const s of steps) if (farthest <= s * 0.9) return s;
-    return Math.ceil(farthest / 500) * 500 || 500;
+    let needed = steps.find(s => farthest <= s * 0.9);
+    if (needed == null) needed = Math.ceil(farthest / 500) * 500 || 500;
+
+    // Hysteresis: grow the scale immediately (never clip a contact off
+    // the scope), but only shrink once we're comfortably below the
+    // current tier. Without this, noise hovering right at a tier
+    // boundary flips the WHOLE scope's scale back and forth every
+    // frame — which moves every contact at once, not just one.
+    if (needed > rangeTier) rangeTier = needed;
+    else if (farthest < rangeTier * 0.5) rangeTier = needed;
+    return rangeTier;
   }
 
   function draw() {
@@ -371,10 +396,13 @@
     const now = Date.now();
     const entries = Object.entries(targets);
     let distances = [];
-    let plotted = [];
+    let plotted = [];   // has a real GPS fix — drawn on the scope
+    let noFix = [];     // heard, but still reporting the 0,0 "no fix yet" placeholder
 
     if (myLat != null && myLon != null) {
       for (const [id, t] of entries) {
+        const hasFix = !(t.lat === 0 && t.lon === 0);
+        if (!hasFix) { noFix.push({ id, t }); continue; }
         const dist = haversineMeters(myLat, myLon, t.lat, t.lon);
         const brg  = bearingDeg(myLat, myLon, t.lat, t.lon);
         const rel  = (brg - heading + 360) % 360;
@@ -471,19 +499,19 @@
       ctx.fillText(isHunter ? `H${p.id}` : `#${p.id}`, x + 8, y - 6);
     }
 
-    countReadout.textContent = plotted.length;
-    updateList(plotted, now);
+    countReadout.textContent = plotted.length + noFix.length;
+    updateList(plotted, noFix, now);
 
     requestAnimationFrame(draw);
   }
 
-  function updateList(plotted, now) {
-    if (plotted.length === 0) {
+  function updateList(plotted, noFix, now) {
+    if (plotted.length === 0 && noFix.length === 0) {
       listEl.innerHTML = '<div id="empty-list">No contacts yet</div>';
       return;
     }
     const sorted = [...plotted].sort((a, b) => a.dist - b.dist);
-    listEl.innerHTML = sorted.map(p => {
+    const positionedRows = sorted.map(p => {
       const stale = (now - p.t.lastSeen) > STALE_MS;
       const isHunter = HUNTER_IDS.has(Number(p.id));
       const distStr = p.dist >= 1000 ? (p.dist/1000).toFixed(2)+' km' : Math.round(p.dist)+' m';
@@ -495,6 +523,20 @@
         <span class="batt">${p.t.batt != null ? p.t.batt + '%' : '--'}</span>
       </div>`;
     }).join('');
+
+    const noFixRows = noFix.map(p => {
+      const stale = (now - p.t.lastSeen) > STALE_MS;
+      const isHunter = HUNTER_IDS.has(Number(p.id));
+      const ageS = Math.round((now - p.t.lastSeen) / 1000);
+      return `<div class="row nofix ${stale ? 'stale' : ''} ${isHunter ? 'hunter' : ''}">
+        <span class="dot"></span>
+        <span class="id">${isHunter ? 'H' : '#'}${p.id}</span>
+        <span class="dist">Waiting for GPS fix · ${ageS}s ago</span>
+        <span class="batt">${p.t.batt != null ? p.t.batt + '%' : '--'}</span>
+      </div>`;
+    }).join('');
+
+    listEl.innerHTML = positionedRows + noFixRows;
   }
 
   resizeCanvas();

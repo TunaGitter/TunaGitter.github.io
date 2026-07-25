@@ -179,6 +179,34 @@ boards.
    the same staggered-slot scheme targets use — so a ping from either
    phone sweeps everyone: targets and the other hunter alike.
 
+## Fixing jittery/flashing contacts on screen
+
+If contacts appear to hold a stable position and then briefly "flash" to
+a different spot before snapping back, there were two compounding causes,
+both now fixed in `index.html`:
+
+- **The 0,0 "no GPS fix yet" placeholder was being plotted as a real,
+  thousands-of-km-away position.** That forced the auto-scaling ring
+  radius up to a huge value to fit it, which squeezed every genuinely
+  nearby contact (your H1/H2 phones) down into a tiny cluster of pixels
+  near the center — where a few meters of ordinary GPS noise translates
+  into a big, visible jump. Targets still reporting the placeholder now
+  show up in the contact list as "Waiting for GPS fix" instead of being
+  plotted on the scope at all, and no longer factor into the auto-scale.
+  This resolves itself further as real targets start reporting real
+  coordinates once their GPS modules are wired up.
+- **Raw phone compass readings are noisy frame-to-frame**, and since
+  every contact's on-screen angle depends on `bearing - heading`, that
+  noise made everything wobble together. Heading is now smoothed with a
+  circular low-pass filter (averaged as a unit vector, not raw degrees,
+  so it doesn't glitch at the 0°/360° wrap).
+- Added a little hysteresis to the auto-scaling itself, so real GPS noise
+  hovering right at a zoom-tier boundary later on doesn't cause the whole
+  scope to flicker between scales either.
+
+Re-upload the updated `index.html` and `service-worker.js` to pick this
+up (same repo, same filenames, overwrite the existing ones).
+
 ## US915 legal notes (California)
 Config defaults to 915 MHz, 20 dBm conducted, SF9/BW125 — well within FCC
 Part 15.247 hobby limits. No mandatory duty-cycle restriction like EU, but
