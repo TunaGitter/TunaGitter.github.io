@@ -84,7 +84,18 @@
   .calib button{ flex:0 0 auto; padding:13px 14px; }
 
   /* ---- target list ---- */
-  #list{ max-height:26vh; overflow-y:auto; border-top:1px solid var(--grid); background:var(--bg-panel); }
+  #list-panel{ border-top:1px solid var(--grid); background:var(--bg-panel); flex-shrink:0; }
+  #list-toggle{
+    width:100%; display:flex; align-items:center; justify-content:space-between;
+    padding:9px 14px; background:transparent; border:none; cursor:pointer;
+    font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--text-dim);
+  }
+  #list-toggle:active{ background:rgba(61,255,154,.08); }
+  #list-toggle-chevron{ color:var(--phosphor); font-size:12px; transition:transform .2s ease; }
+  #list-panel.collapsed #list-toggle-chevron{ transform:rotate(-90deg); }
+  #list{ max-height:26vh; overflow-y:auto; transition:max-height .25s ease, opacity .2s ease; }
+  #list-panel.collapsed #list{ max-height:0; opacity:0; overflow:hidden; }
   .row{
     display:flex; align-items:center; gap:10px; padding:8px 14px;
     border-bottom:1px solid rgba(18,61,41,.6); font-size:12px;
@@ -121,7 +132,13 @@
     <span>Contacts: <b id="count-readout">0</b></span>
   </div>
 
-  <div id="list"><div id="empty-list">No contacts yet</div></div>
+  <div id="list-panel">
+    <button id="list-toggle" type="button">
+      <span>Contacts (<span id="list-toggle-count">0</span>)</span>
+      <span id="list-toggle-chevron">▾</span>
+    </button>
+    <div id="list"><div id="empty-list">No contacts yet</div></div>
+  </div>
 
   <div class="controls">
     <button id="connect-btn" class="primary">Connect Bridge</button>
@@ -140,8 +157,8 @@
   const CHAR_DATA_UUID    = '7a2e0002-4b8a-4f0f-9a3d-2e6f8c1a9b10';
   const CHAR_CONTROL_UUID = '7a2e0003-4b8a-4f0f-9a3d-2e6f8c1a9b10';
 
-  const STALE_MS = 45000;   // dim a contact after this long without an update
-  const EXPIRE_MS = 180000; // fully drop a contact from the list/scope after this long with no update at all
+  const STALE_MS = 30000;  // dim a contact after this long without an update
+  const EXPIRE_MS = 90000; // fully drop a contact from the list/scope after this long with no update at all
   const POS_PUSH_INTERVAL_MS = 5000; // how often to push this phone's GPS down to the bridge
 
   // Node IDs that are OTHER hunters/bridges, not dragon-ball targets —
@@ -171,6 +188,9 @@
   const hdgReadout = document.getElementById('hdg-readout');
   const countReadout = document.getElementById('count-readout');
   const listEl = document.getElementById('list');
+  const listPanel = document.getElementById('list-panel');
+  const listToggle = document.getElementById('list-toggle');
+  const listToggleCount = document.getElementById('list-toggle-count');
 
   // ---- geo math (mirrors firmware) ----
   const toRad = d => d * Math.PI / 180;
@@ -336,6 +356,16 @@
 
   document.getElementById('calib-minus').onclick = () => { headingOffset = (headingOffset - 5 + 360) % 360; };
   document.getElementById('calib-plus').onclick  = () => { headingOffset = (headingOffset + 5) % 360; };
+
+  // Collapsing the list frees up vertical space for the scope (flex:1
+  // grows to fill it automatically), but the canvas's internal drawing
+  // buffer needs an explicit resize — it doesn't follow CSS layout
+  // changes on its own the way the element's on-screen size does.
+  listToggle.onclick = () => {
+    listPanel.classList.toggle('collapsed');
+    resizeCanvas();
+  };
+  listEl.addEventListener('transitionend', resizeCanvas);
 
   // ---- BLE ----
   async function connectBridge() {
@@ -559,6 +589,7 @@
     }
 
     countReadout.textContent = plotted.length + noFix.length;
+    listToggleCount.textContent = plotted.length + noFix.length;
     updateList(plotted, noFix, now);
 
     requestAnimationFrame(draw);
