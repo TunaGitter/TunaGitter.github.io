@@ -453,11 +453,14 @@
     } catch (err) { console.error('ping write failed', err); }
   };
 
+  let contactAdded = false; // set when a new (never-seen) node_id shows up; consumed in draw() after the DOM updates
+
   function handleData(event) {
     const text = new TextDecoder().decode(event.target.value);
     let pkt;
     try { pkt = JSON.parse(text); } catch { console.warn('bad packet', text); return; }
     if (pkt.id == null) return;
+    if (!(pkt.id in targets)) contactAdded = true;
     targets[pkt.id] = {
       lat: pkt.lat, lon: pkt.lon, batt: pkt.batt, type: pkt.type,
       lastSeen: Date.now(), flash: Date.now()
@@ -531,7 +534,7 @@
     }
 
     if (verticalMode) {
-      drawVerticalScope(cx, cy, w, h, plotted, now);
+      drawVerticalScope(cx, cy, w, h, R, plotted, distances, now);
     } else {
       drawTopDownScope(cx, cy, w, h, R, plotted, distances, now);
     }
@@ -540,11 +543,12 @@
     listToggleCount.textContent = plotted.length + noFix.length;
     updateList(plotted, noFix, now);
 
-    // A contact expiring shrinks the list's natural height (it's not a
-    // fixed-height flex child, just capped at max-height), which frees
-    // vertical space for the scope the same way collapsing the list
-    // manually does — same reason that needs an explicit resize.
-    if (anyExpired) resizeCanvas();
+    // A contact expiring shrinks the list's natural height, and a new
+    // contact arriving grows it — either way the space available to the
+    // scope above changes, same reason the manual collapse toggle needs
+    // an explicit resize.
+    if (anyExpired || contactAdded) resizeCanvas();
+    contactAdded = false;
 
     requestAnimationFrame(draw);
   }
@@ -641,38 +645,52 @@
 
   // ---- Vertical scope: side-on elevation view, activated by tilt ----
   // Elevation data doesn't flow through the protocol yet (no barometer
-  // reports over LoRa), so this can't plot real elevation angles. What
-  // it CAN do — and what's worth testing right now — is confirm the
-  // tilt-activation itself works: contacts are laid out left-to-right by
-  // relative bearing at a fixed horizon height, so switching to this
-  // view by tilting the phone up is visibly obvious even before there's
-  // real altitude data to plot vertically.
-  function drawVerticalScope(cx, cy, w, h, plotted, now) {
-    const horizonY = cy;
+  // reports over LoRa), so real altitude offsets aren't available. This
+  // mirrors the top-down scope's layout as closely as possible — same
+  // center point, same range rings, same distance-based horizontal
+  // placement — so a contact sits in roughly the same left-right spot it
+  // would in the normal view. The only thing that changes is the
+  // vertical axis: instead of encoding the north/south component of
+  // bearing (like the top-down polar plot does), it's reserved for
+  // altitude difference — currently always 0 since there's no altitude
+  // data yet, so everything sits on the center horizon line, but the
+  // structure is ready for a real value once barometer data flows
+  // through the protocol.
+  function drawVerticalScope(cx, cy, w, h, R, plotted, distances, now) {
     const mono = getComputedStyle(document.documentElement).getPropertyValue('--mono');
 
-    ctx.strokeStyle = 'rgba(61,255,154,0.35)';
-    ctx.lineWidth = 1.5;
+    // range rings, same as top-down
+    ctx.strokeStyle = 'rgba(61,255,154,0.18)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 3; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, R * i / 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    // horizon line (level with you) drawn brighter than the vertical
+    // reference, since "am I looking up or down" is the point of this view
+    ctx.strokeStyle = 'rgba(61,255,154,0.4)';
     ctx.beginPath();
-    ctx.moveTo(20, horizonY);
-    ctx.lineTo(w - 20, horizonY);
+    ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(61,255,154,0.15)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
     ctx.stroke();
 
+    const maxRange = currentMaxRange(distances);
+
     ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(216,255,233,0.55)';
-    ctx.font = '10px ' + mono;
-    ctx.fillText('VERTICAL MODE', cx, 24);
-    ctx.fillStyle = 'rgba(216,255,233,0.35)';
+    ctx.fillStyle = 'rgba(216,255,233,0.4)';
     ctx.font = '9px ' + mono;
-    ctx.fillText('Elevation data pending — barometer not yet integrated', cx, 40);
-    ctx.fillText('Contacts placed by bearing only, at horizon height', cx, 52);
+    ctx.fillText('VERTICAL — elevation offset pending barometer integration', cx, 14);
     ctx.textAlign = 'left';
 
-    // "you" marker at the left edge, facing along the horizon
+    // "you" marker at center, same triangle as the top-down view
     ctx.beginPath();
-    ctx.moveTo(20, horizonY - 7);
-    ctx.lineTo(30, horizonY);
-    ctx.lineTo(20, horizonY + 7);
+    ctx.moveTo(cx, cy - 9);
+    ctx.lineTo(cx + 6, cy + 7);
+    ctx.lineTo(cx - 6, cy + 7);
     ctx.closePath();
     ctx.fillStyle = '#d8ffe9';
     ctx.fill();
@@ -681,10 +699,15 @@
       const age = now - p.t.lastSeen;
       const stale = age > STALE_MS;
       const isHunter = HUNTER_IDS.has(Number(p.id));
-      const signedRel = p.rel > 180 ? p.rel - 360 : p.rel; // -180..180, 0 = straight ahead
-      const usableWidth = w - 60;
-      const x = cx + (signedRel / 180) * (usableWidth / 2);
-      const y = horizonY;
+      const contactAngle = northUp ? p.brg : p.rel;
+      const ang = toRad(contactAngle - 90);
+      const horizontalR = Math.min(p.dist / maxRange, 1) * R;
+      const x = cx + horizontalR * Math.cos(ang);
+      // TODO once altitude flows through the protocol: replace 0 with
+      // something like ((myAlt - p.t.alt) / altRange) * R
+      const altOffset = 0;
+      const y = cy - altOffset;
+
       const liveColor = isHunter ? '#ffb648' : '#3dff9a';
       const staleColor = isHunter ? 'rgba(255,182,72,0.65)' : 'rgba(95,154,124,0.8)';
 

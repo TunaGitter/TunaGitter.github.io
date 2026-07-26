@@ -280,13 +280,18 @@ Two more `index.html` additions:
 - **Vertical Mode** (auto-activated by tilt, not tap-to-toggle like North
   Up): holding the phone within 40° of upright (with 5° of hysteresis on
   the way back out, so it doesn't flicker right at the boundary) switches
-  the scope to a side-on view — contacts laid out left-to-right by
-  relative bearing at a fixed horizon height. It does NOT yet plot real
-  elevation angles, since no altitude data flows through the protocol at
-  all currently (see the standalone hunter section above) — this is
-  scoped specifically to test the tilt-activation mechanism itself. The
-  readout row shows current state (`V-Mode: Off` / `On (auto)`) so you
-  can confirm the 40° threshold triggers correctly as you tilt.
+  the scope's vertical axis from encoding bearing to encoding altitude
+  offset. Layout otherwise matches the top-down view exactly — same
+  center point, same range rings, same "you" triangle, same distance-
+  based horizontal placement — so a contact holds roughly the same
+  left-right position switching between modes. It does NOT yet plot real
+  elevation, since no altitude data flows through the protocol at all
+  currently (see the standalone hunter section above) — every contact
+  currently sits on the center horizon line (`altOffset = 0` is a clearly
+  marked placeholder in the code, ready for a real value once barometer
+  data starts flowing). The readout row shows current state
+  (`V-Mode: Off` / `On (auto)`) so you can confirm the 40° threshold
+  triggers correctly as you tilt.
 
 ## US915 legal notes (California)
 Config defaults to 915 MHz, 20 dBm conducted, SF9/BW125 — well within FCC
