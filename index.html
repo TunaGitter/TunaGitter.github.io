@@ -80,8 +80,16 @@
   button.primary:active{ background:var(--phosphor-dim); }
   button:disabled{ opacity:.35; pointer-events:none; }
   button.active{ background:var(--amber); color:#1a1200; border-color:var(--amber); font-weight:700; }
-  .calib{ display:flex; gap:6px; }
-  .calib button{ flex:0 0 auto; padding:13px 14px; }
+  .stack-group{ display:flex; flex-direction:column; gap:3px; flex:0 0 auto; }
+  .stack-group button{ flex:0 0 auto; padding:6px 10px; font-size:10px; }
+  #reset-btn{
+    position:absolute; top:10px; right:10px; z-index:5;
+    width:34px; height:34px; padding:0; border-radius:50%;
+    background:rgba(10,30,21,0.85); border:1px solid var(--phosphor-dim);
+    color:var(--phosphor); font-family:var(--mono); font-size:9px; font-weight:700;
+    letter-spacing:0; text-transform:uppercase;
+  }
+  #reset-btn:active{ background:rgba(61,255,154,.18); transform:scale(.94); }
 
   /* ---- target list ---- */
   #list-panel{ border-top:1px solid var(--grid); background:var(--bg-panel); flex-shrink:0; }
@@ -124,6 +132,7 @@
 
   <div class="scope-wrap">
     <canvas id="scope"></canvas>
+    <button id="reset-btn" title="Reset heading calibration and zoom to defaults">RST</button>
   </div>
 
   <div class="readout">
@@ -145,9 +154,13 @@
     <button id="connect-btn" class="primary">Connect Bridge</button>
     <button id="ping-btn" disabled>Ping</button>
     <button id="northup-btn" title="Toggle between heading-up and north-up">North Up: Off</button>
-    <div class="calib">
-      <button id="calib-minus" title="Nudge heading -5°">-5°</button>
+    <div class="stack-group">
       <button id="calib-plus" title="Nudge heading +5°">+5°</button>
+      <button id="calib-minus" title="Nudge heading -5°">-5°</button>
+    </div>
+    <div class="stack-group">
+      <button id="zoom-plus" title="Increase distance scale by 10m">+10m</button>
+      <button id="zoom-minus" title="Decrease distance scale by 10m">-10m</button>
     </div>
   </div>
 
@@ -384,6 +397,23 @@
   document.getElementById('calib-minus').onclick = () => { headingOffset = (headingOffset - 5 + 360) % 360; };
   document.getElementById('calib-plus').onclick  = () => { headingOffset = (headingOffset + 5) % 360; };
 
+  // Zoom buttons set/adjust a manual range override in 10m steps. First
+  // tap seeds it from whatever the auto-scale currently shows, so the
+  // scope doesn't jump unexpectedly the moment you touch a zoom button.
+  document.getElementById('zoom-plus').onclick = () => {
+    if (manualRangeOverride == null) manualRangeOverride = rangeTier;
+    manualRangeOverride = Math.max(10, manualRangeOverride + 10);
+  };
+  document.getElementById('zoom-minus').onclick = () => {
+    if (manualRangeOverride == null) manualRangeOverride = rangeTier;
+    manualRangeOverride = Math.max(10, manualRangeOverride - 10);
+  };
+
+  document.getElementById('reset-btn').onclick = () => {
+    headingOffset = 0;
+    manualRangeOverride = null;
+  };
+
   // Collapsing the list frees up vertical space for the scope (flex:1
   // grows to fill it automatically), but the canvas's internal drawing
   // buffer needs an explicit resize — it doesn't follow CSS layout
@@ -481,7 +511,11 @@
   }
   window.addEventListener('resize', resizeCanvas);
 
+  let manualRangeOverride = null; // null = auto-scale (default); a number = manually set via the zoom buttons, until RST
+
   function currentMaxRange(distances) {
+    if (manualRangeOverride != null) return manualRangeOverride;
+
     const farthest = distances.length ? Math.max(...distances) : 0;
     const steps = [50, 100, 200, 500, 1000, 2000, 5000];
     let needed = steps.find(s => farthest <= s * 0.9);
@@ -679,6 +713,14 @@
     ctx.stroke();
 
     const maxRange = currentMaxRange(distances);
+
+    // ring distance labels — same as the top-down view
+    ctx.fillStyle = 'rgba(216,255,233,0.45)';
+    ctx.font = '10px ' + mono;
+    for (let i = 1; i <= 3; i++) {
+      const label = Math.round(maxRange * i / 3);
+      ctx.fillText(label >= 1000 ? (label/1000).toFixed(1)+'km' : label+'m', cx + 4, cy - R * i / 3 + 12);
+    }
 
     ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(216,255,233,0.4)';

@@ -293,6 +293,24 @@ Two more `index.html` additions:
   (`V-Mode: Off` / `On (auto)`) so you can confirm the 40° threshold
   triggers correctly as you tilt.
 
+## Manual zoom + reset controls
+
+- **Vertical Mode now shows the same ring distance labels** the top-down
+  view has, using the same `currentMaxRange()` scale.
+- **Heading calibration (±5°) and zoom (±10m) are now stacked button
+  pairs** side by side in the controls row, instead of a single row of
+  loose buttons — more compact, and adds room for the new zoom controls
+  without crowding the row further.
+- **Zoom (+10m / -10m)** sets a manual override on the distance scale,
+  seeded from whatever the auto-scale currently shows on first tap, so it
+  doesn't jump unexpectedly. While a manual override is active, the scope
+  stops auto-scaling entirely — useful for locking the view still while
+  comparing distances, rather than having the scale silently drift as
+  contacts move.
+- **RST button** (top-right corner, overlaid on the scope itself) resets
+  both the heading calibration offset and the manual zoom override back
+  to defaults (0° offset, auto-scaling resumed) in one tap.
+
 ## US915 legal notes (California)
 Config defaults to 915 MHz, 20 dBm conducted, SF9/BW125 — well within FCC
 Part 15.247 hobby limits. No mandatory duty-cycle restriction like EU, but
