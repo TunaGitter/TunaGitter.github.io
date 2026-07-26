@@ -731,7 +731,7 @@
       return `<div class="row nofix ${stale ? 'stale' : ''} ${isHunter ? 'hunter' : ''}">
         <span class="dot"></span>
         <span class="id">${isHunter ? 'H' : '#'}${p.id}</span>
-        <span class="dist">Waiting for GPS fix · ${ageS}s ago</span>
+        <span class="dist">Waiting for GPS · ${ageS}s ago</span>
         <span class="batt">${p.t.batt != null ? p.t.batt + '%' : '--'}</span>
       </div>`;
     }).join('');
