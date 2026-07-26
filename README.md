@@ -179,6 +179,42 @@ boards.
    the same staggered-slot scheme targets use — so a ping from either
    phone sweeps everyone: targets and the other hunter alike.
 
+## Standalone hunter firmware (hunter_standalone_node.ino)
+
+A third hunter option alongside `hunter_node.ino` (old SSD1306 prototype)
+and `bridge_node.ino` (phone-paired): `hunter_standalone_node/` has its
+own GPS, its own BNO055 IMU for heading, its own AHT20/BMP280 for local
+altitude, and draws the radar directly on a 240x240 round GC9A01 display
+— no phone required.
+
+**Pin assignment** (all of D0-D7 were free — the Wio-SX1262 uses
+dedicated GPIO39-42 plus the hardware SPI bus, not the D-numbered pins):
+
+| Pin | Assigned to |
+|---|---|
+| D0 | Battery voltage sense (ADC) |
+| D1 | GC9A01 display CS |
+| D2 | GC9A01 display DC |
+| D3 | Ping button |
+| D4 | I2C SDA (BNO055 + AHT20 + BMP280, shared bus) |
+| D5 | I2C SCL |
+| D6 | GPS UART TX |
+| D7 | GPS UART RX |
+
+Display RST ties to 3.3V (software reset instead of a dedicated pin);
+display SCK/MOSI share the same physical SPI bus as the LoRa radio, with
+their own CS.
+
+**Deliberately NOT done yet:** this firmware reads the barometer for its
+own on-screen altitude display only — it does not transmit altitude over
+LoRa. Adding that means extending `DragonPacket` and reflashing the
+entire fleet (6 targets + 2 bridges), which hasn't happened, to avoid
+breaking the already-working deployment. Revisit once ready to commit to
+a coordinated fleet-wide reflash.
+
+Not currently deployed — built ahead of time for bench testing once the
+GPS/IMU/barometer/display hardware is in hand.
+
 ## Fixing jittery/flashing contacts on screen
 
 If contacts appear to hold a stable position and then briefly "flash" to
@@ -231,6 +267,26 @@ up (same repo, same filenames, overwrite the existing ones).
   to any real event, so it's gone. The pulse-ring animation on each
   contact is unrelated and stays, since that one *is* data-driven — it
   fires exactly when a fresh packet actually arrives for that contact.
+
+## Resize-on-expiry + tilt-linked Vertical Mode
+
+Two more `index.html` additions:
+
+- **Canvas now resizes when a contact expires**, not just on manual list
+  collapse/window resize. A contact dropping out of `EXPIRE_MS` shrinks
+  the list's natural height (it's capped at a max-height, not fixed), so
+  the scope above it needs the same explicit resize call collapsing the
+  list manually already triggered.
+- **Vertical Mode** (auto-activated by tilt, not tap-to-toggle like North
+  Up): holding the phone within 40° of upright (with 5° of hysteresis on
+  the way back out, so it doesn't flicker right at the boundary) switches
+  the scope to a side-on view — contacts laid out left-to-right by
+  relative bearing at a fixed horizon height. It does NOT yet plot real
+  elevation angles, since no altitude data flows through the protocol at
+  all currently (see the standalone hunter section above) — this is
+  scoped specifically to test the tilt-activation mechanism itself. The
+  readout row shows current state (`V-Mode: Off` / `On (auto)`) so you
+  can confirm the 40° threshold triggers correctly as you tilt.
 
 ## US915 legal notes (California)
 Config defaults to 915 MHz, 20 dBm conducted, SF9/BW125 — well within FCC
